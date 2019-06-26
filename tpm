@@ -1,0 +1,143 @@
+Для обеспечения безопасности в Кафке мы можем использовать SASL.
+SASL - это подключаемый плагин, в котором могут использоваться различные механизмы, такие как PLAIN, SCRAM, GSSAPI, OAUTHBEARER или иные, пользовательские, реализации.
+
+SASL позволяет Kafka аутентифицировать производителей (producer) и потребителей (consumer). ACL позволят этим клиентам выполнять различные операции, такие как чтение, запись, описание и т.д. в topics.
+
+Kafka LDAP Security Hook - это расширение механизма SASL PLAIN, которое позволяет :
+
+Позволить Kafka аутентифицировать клиентов по LDAP
+Выполнять авторизацию ACL на уровне группы
+
+Установка :
+1. Чтобы все заработало нам нужен файл kafka-ldap-hook.jar в папке библиотеки Kafka : (для нашего gitlab'a файл слишком велик ~53Mb) https://dropmefiles.com/S3Nrl пароль: 2CAH0M
+2. Произвести дополнительно настройки окружения :
+  настройка zookeeper : 
+    a. export KAFKA_OPTS="-Djava.security.auth.login.config=[PATH_TO_KAFKA]/config/zookeeper_server_jaas.conf"
+    b. [PATH_TO_KAFKA]/bin/zookeeper-server-start.sh [PATH_TO_KAFKA]/config/zookeeper.properties
+  
+  настройка брокера :
+    server.properties :
+      
+broker.id=0
+listeners=SASL_PLAINTEXT://localhost:9092
+
+# Security
+security.inter.broker.protocol=SASL_PLAINTEXT
+sasl.mechanism.inter.broker.protocol=PLAIN
+sasl.enabled.mechanisms=PLAIN
+
+# LDAP Security Hook
+listener.name.sasl_plaintext.plain.sasl.server.callback.handler.class=test.example.edp.kafka.security.authentication.SimpleLDAPAuthentication
+authorizer.class.name=test.example.edp.kafka.security.authorization.SimpleLDAPAuthorizer
+
+super.users=User:admin
+num.network.threads=3
+num.io.threads=8
+socket.send.buffer.bytes=102400
+socket.receive.buffer.bytes=102400
+socket.request.max.bytes=104857600
+log.dirs=/tmp/kafka-logs
+num.partitions=1
+num.recovery.threads.per.data.dir=1
+offsets.topic.replication.factor=1
+transaction.state.log.replication.factor=1
+transaction.state.log.min.isr=1
+log.retention.hours=168
+log.segment.bytes=1073741824
+log.retention.check.interval.ms=300000
+
+zookeeper.connect=localhost:2181
+zookeeper.connection.timeout.ms=6000
+group.initial.rebalance.delay.ms=0
+
+
+  файл брокера JAAS для SASL :
+  
+KafkaServer {
+   org.apache.kafka.common.security.plain.PlainLoginModule required
+   username="admin"
+   password="admin"
+   user_admin="admin";
+};
+Client {
+   org.apache.kafka.common.security.plain.PlainLoginModule required
+   username="admin"
+   password="admin-secret";
+}
+
+
+  настройка LDAP :
+  
+#host of the LDAP server
+host: ipa.example.test
+#port of the LDAP server
+port: 389
+# connectionTimout in milliseconds for LDAP
+connTimeout: 5000
+# ssl enabled
+sslEnabled: false
+# userDN is <usrUid>=<usr>,<usrBaseDN>
+# Placement of users in LDAP tree
+usrBaseDN: cn=usersrs,cn=group,cn=ServiceAccounts,dc=example,dc=test
+# Used for admin user only
+adminBaseDN: dc=example,dc=org
+adminUid: cn
+# User attribute for DN completion
+usrUid: uid
+# groupDN is <grpUid>=<group>,<grpBaseDN>
+# Placement of groups in LDAP tree
+grpBaseDN: cn=group,cn=ServiceAccounts,dc=example,dc=test
+# Group attribute for DN completion
+grpUid: cn
+# Group membership is LDAP CompareRequest(groupDN, <grpAttrName>, userDN)
+# Group membership attribute name
+grpAttrName: memberOf
+# Lifetime of user entry in cache after cache-write - IN MINUTES
+usrCacheExpire: 2
+# Lifetime of group entry in cache after cache-write - IN MINUTES
+grpCacheExpire: 4
+
+
+  запуск брокера :
+
+   a. export KAFKA_OPTS="-Djava.security.auth.login.config=[PATH_TO_KAFKA]/config/kafka_server_jaas.conf -Dldapconfig.file.path=[PATH_TO_LDAPCONFIG_YAML]"
+   b. [PATH_TO_KAFKA]/bin/kafka-server-start.sh [PATH_TO_KAFKA]/config/server.properties
+
+
+  создаем топик :
+    ./kafka-topics.sh --create --zookeeper localhost:2181 --replication-factor 1 --partitions 1 --topic events
+
+
+  настраиваем правила ACL :
+    bin/kafka-acls.sh --authorizer kafka.security.auth.SimpleAclAuthorizer --authorizer-properties zookeeper.connect=localhost:2181 --add --allow-principal Group:AppProducers --operation Describe --topic events
+
+
+  настраиваем производителя (producer) :
+KafkaClient {
+  org.apache.kafka.common.security.plain.PlainLoginModule required
+  username="consumer_client1"
+  password="cclient1";
+};
+
+
+  запускаем производителя (producer) :
+    export KAFKA_OPTS="-Djava.security.auth.login.config=[PATH_TO_KAFKA]/config/kafka_client_producer_jaas.conf"
+./kafka-console-producer.sh --broker-list localhost:9092 --topic test --producer.config ../config/producer.properties
+
+
+  настраиваем потребителя (consumer) :
+KafkaClient {
+  org.apache.kafka.common.security.plain.PlainLoginModule required
+  username="consumer_client1"
+  password="cclient1";
+};
+
+
+  запускаем потребителя (consumer) :
+    export KAFKA_OPTS="-Djava.security.auth.login.config=config/kafka_client_consumer_jaas.conf"
+/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic events --consumer.config ../config/consumer.properties --from-beginning
+
+
+  тестируем ...
+  
+  спасибо.
